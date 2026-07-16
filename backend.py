@@ -9,7 +9,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 # IMPORTANT: Import your StateGraph builder from your graph.py file here.
 # For example, if your graph builder object is named 'workflow' in graph.py:
-from graph import workflow 
+from graph import SentinelState
 
 # --- CONFIGURATION ---
 DATABASE_URL = os.getenv("DATABASE_URL")
