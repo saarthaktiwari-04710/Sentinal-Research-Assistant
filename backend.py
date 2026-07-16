@@ -72,14 +72,22 @@ async def get_history(thread_id: str):
 
 @app.post("/stream")
 async def stream_agent(request: RunRequest):
-    """Starts a new agent run and streams node updates safely via SSE."""
     async def sse_generator():
         config = {"configurable": {"thread_id": request.thread_id}}
         
-        # If a file was uploaded, we prefix it to the retrieved context initialization step
+        # 1. Safely fetch the existing history for this thread
+        existing_state = await agent.aget_state(config)
+        current_history = []
+        if existing_state and hasattr(existing_state, 'values') and "chat_history" in existing_state.values:
+            current_history = existing_state.values["chat_history"]
+            
+        # 2. Append the new message without deleting the old ones
+        current_history.append(f"User: {request.query}")
+        
+        # 3. Pass the full, combined history to the graph
         inputs = {
             "original_query": request.query, 
-            "chat_history": [f"User: {request.query}"], 
+            "chat_history": current_history, 
             "retrieved_context": request.file_context if request.file_context else "",
             "loop_count": 0
         }
