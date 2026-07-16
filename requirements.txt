@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 langgraph
+langgraph-checkpoint-sqlite
 langchain-groq
 langchain-community
 duckduckgo-search
