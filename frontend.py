@@ -126,8 +126,17 @@ if user_query := st.chat_input("Ask Sentinel anything...", disabled=(st.session_
                 "file_context": uploaded_file_context 
             }
             
-            response = requests.post(f"{BACKEND_URL}/stream", json=payload, stream=True)
+            # Ensure no double slashes in the URL string
+            clean_url = BACKEND_URL.rstrip('/')
             
+            # --- NEW: Check for server errors (like 502 or 404) before parsing ---
+            response = requests.post(f"{clean_url}/stream", json=payload, stream=True)
+            
+            if response.status_code != 200:
+                st.error(f"Backend Server Error ({response.status_code}): {response.text}")
+                st.session_state.agent_status = "idle"
+                st.stop()
+                
             for line in response.iter_lines():
                 if line:
                     data_str = line.decode('utf-8').replace("data: ", "")
@@ -147,11 +156,13 @@ if user_query := st.chat_input("Ask Sentinel anything...", disabled=(st.session_
                                 
                             st.write(f"✅ **{node_name.upper()}** completed.")
                             
-                            if state_data is not None and "current_draft" in state_data:
+                            # Only update the draft text if it actually exists in the dictionary
+                            if isinstance(state_data, dict) and "current_draft" in state_data:
                                 st.session_state.draft_text = state_data["current_draft"]
                             
                             if node_name == "chitchat":
-                                st.session_state.chat_history.append({"role": "assistant", "content": st.session_state.draft_text})
+                                if st.session_state.draft_text.strip():
+                                    st.session_state.chat_history.append({"role": "assistant", "content": st.session_state.draft_text})
                                 st.session_state.agent_status = "idle"
                                 st.rerun()
                                 
@@ -159,7 +170,8 @@ if user_query := st.chat_input("Ask Sentinel anything...", disabled=(st.session_
                         pass
                         
             if st.session_state.agent_status == "running":
-                st.session_state.chat_history.append({"role": "assistant", "content": st.session_state.draft_text})
+                if st.session_state.draft_text.strip():
+                    st.session_state.chat_history.append({"role": "assistant", "content": st.session_state.draft_text})
                 st.session_state.agent_status = "idle"
                 st.rerun()
                 
