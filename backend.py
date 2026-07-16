@@ -8,7 +8,7 @@ from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 # IMPORTANT: Import your StateGraph builder from your graph.py file here.
-# For example, if your graph builder object is named 'workflow' in graph.py:
+# For example, if your graph builder object is named 'builder' in graph.py:
 from graph import builder
 
 # --- CONFIGURATION ---
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
         await checkpointer.setup()
         
         # Compile your custom graph with the Postgres checkpointer attached
-        agent = your_variable_name.compile(checkpointer=checkpointer)
+        agent = builder.compile(checkpointer=checkpointer)
         
         yield # The FastAPI server runs while paused here
 
