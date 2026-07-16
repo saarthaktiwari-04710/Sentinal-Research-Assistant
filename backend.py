@@ -24,15 +24,18 @@ agent = None
 async def lifespan(app: FastAPI):
     global agent
     
-    # Connect to the permanent Neon PostgreSQL database
-    async with AsyncConnectionPool(conninfo=DATABASE_URL) as pool:
+    # NEW: Added kwargs={"autocommit": True} to fix the transaction error
+    async with AsyncConnectionPool(
+        conninfo=DATABASE_URL, 
+        kwargs={"autocommit": True}
+    ) as pool:
         checkpointer = AsyncPostgresSaver(pool)
         
-        # Automatically creates the memory tables (checkpoints, writes, etc.) in Neon
+        # This will now successfully run without the ActiveSqlTransaction error!
         await checkpointer.setup()
         
         # Compile your custom graph with the Postgres checkpointer attached
-        agent = workflow.compile(checkpointer=checkpointer)
+        agent = your_variable_name.compile(checkpointer=checkpointer)
         
         yield # The FastAPI server runs while paused here
 
