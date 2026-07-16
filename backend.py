@@ -44,15 +44,31 @@ class ResumeRequest(BaseModel):
 
 @app.get("/history/{thread_id}")
 async def get_history(thread_id: str):
-    """Fetches the past chat history for a specific thread from the SQLite checkpointer."""
+    """Fetches the past chat history safely from the SQLite checkpointer."""
     config = {"configurable": {"thread_id": thread_id}}
-    state = await agent.aget_state(config)
     
-    # Check if the state exists and has values
-    if state and hasattr(state, 'values') and state.values:
-        return {"chat_history": state.values.get("chat_history", [])}
-    
+    try:
+        # 1. Fetch the latest configuration checkpoint state
+        state = await agent.aget_state(config)
+        
+        # 2. Extract values safely if they exist
+        if state and state.values:
+            history = state.values.get("chat_history", [])
+            return {"chat_history": history}
+            
+        # 3. Fallback: If aget_state returns empty, iterate through state history 
+        # to find the most recent checkpoint containing the chat log
+        async for state_update in agent.aget_state_history(config):
+            if state_update.values and "chat_history" in state_update.values:
+                history = state_update.values["chat_history"]
+                if history:
+                    return {"chat_history": history}
+                    
+    except Exception as e:
+        print(f"Error fetching history: {str(e)}")
+        
     return {"chat_history": []}
+
 
 @app.post("/stream")
 async def stream_agent(request: RunRequest):
