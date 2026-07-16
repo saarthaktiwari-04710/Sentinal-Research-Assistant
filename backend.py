@@ -1,50 +1,60 @@
 import os
 import json
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from dotenv import load_dotenv
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from graph import builder  # Ensures graph.py is in the same folder
+from psycopg_pool import AsyncConnectionPool
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-# Load environment variables
-load_dotenv()
+# IMPORTANT: Import your StateGraph builder from your graph.py file here.
+# For example, if your graph builder object is named 'workflow' in graph.py:
+from graph import workflow 
 
-# Define global variable for the agent
-agent = None
+# --- CONFIGURATION ---
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is missing!")
 
+# Global agent variable to be initialized in lifespan
+agent = None 
+
+# --- LIFESPAN (DATABASE CONNECTION) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global agent
     
-    # Using AsyncSqliteSaver for zero-config local persistence
-    async with AsyncSqliteSaver.from_conn_string("checkpoints.sqlite") as checkpointer:
-        await checkpointer.setup() # Automatically creates local database tables
+    # Connect to the permanent Neon PostgreSQL database
+    async with AsyncConnectionPool(conninfo=DATABASE_URL) as pool:
+        checkpointer = AsyncPostgresSaver(pool)
         
-        # Compile the graph with persistence and a HITL interrupt BEFORE the synthesizer
-        agent = builder.compile(
-            checkpointer=checkpointer,
-            interrupt_before=["synthesizer"]
-        )
-        yield # Application runs here
+        # Automatically creates the memory tables (checkpoints, writes, etc.) in Neon
+        await checkpointer.setup()
+        
+        # Compile your custom graph with the Postgres checkpointer attached
+        agent = workflow.compile(checkpointer=checkpointer)
+        
+        yield # The FastAPI server runs while paused here
 
-# --- THIS IS THE LINE UVICORN WAS MISSING ---
+# Initialize FastAPI
 app = FastAPI(lifespan=lifespan)
 
+# --- PYDANTIC MODELS ---
 class RunRequest(BaseModel):
     query: str
     thread_id: str
-    file_context: str = ""  # NEW: Holds the raw text extracted from the document
+    file_context: str = ""
 
 class ResumeRequest(BaseModel):
     thread_id: str
-    action: str 
-    edited_draft: str = None
+    action: str
+    edited_draft: str
+
+# --- ENDPOINTS ---
 
 @app.get("/history/{thread_id}")
 async def get_history(thread_id: str):
-    """Fetches the past chat history safely from the SQLite checkpointer."""
+    """Fetches the past chat history safely from the Postgres checkpointer."""
     config = {"configurable": {"thread_id": thread_id}}
     
     try:
@@ -52,14 +62,13 @@ async def get_history(thread_id: str):
         state = await agent.aget_state(config)
         
         # 2. Extract values safely if they exist
-        if state and state.values:
+        if state and hasattr(state, 'values') and state.values:
             history = state.values.get("chat_history", [])
             return {"chat_history": history}
             
-        # 3. Fallback: If aget_state returns empty, iterate through state history 
-        # to find the most recent checkpoint containing the chat log
+        # 3. Fallback: Iterate through state history to find the most recent chat log
         async for state_update in agent.aget_state_history(config):
-            if state_update.values and "chat_history" in state_update.values:
+            if hasattr(state_update, 'values') and "chat_history" in state_update.values:
                 history = state_update.values["chat_history"]
                 if history:
                     return {"chat_history": history}
@@ -72,19 +81,22 @@ async def get_history(thread_id: str):
 
 @app.post("/stream")
 async def stream_agent(request: RunRequest):
+    """Executes the graph and streams the state updates back to the frontend."""
     async def sse_generator():
         config = {"configurable": {"thread_id": request.thread_id}}
         
         # 1. Safely fetch the existing history for this thread
         existing_state = await agent.aget_state(config)
         current_history = []
+        
         if existing_state and hasattr(existing_state, 'values') and "chat_history" in existing_state.values:
-            current_history = existing_state.values["chat_history"]
+            # Create a copy of the list so we don't mutate the reference
+            current_history = list(existing_state.values["chat_history"])
             
         # 2. Append the new message without deleting the old ones
         current_history.append(f"User: {request.query}")
         
-        # 3. Pass the full, combined history to the graph
+        # 3. Pass the full, combined history to the graph inputs
         inputs = {
             "original_query": request.query, 
             "chat_history": current_history, 
@@ -101,43 +113,26 @@ async def stream_agent(request: RunRequest):
             
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
+
 @app.post("/resume")
 async def resume_agent(request: ResumeRequest):
-    """Resumes the graph based on human approval or rejection."""
+    """Handles the human-in-the-loop approval or rejection of drafts."""
     config = {"configurable": {"thread_id": request.thread_id}}
     
-    if request.action == "approve":
-        if request.edited_draft:
-            # Save any manual typos the human fixed
-            await agent.aupdate_state(config, {"current_draft": request.edited_draft})
-            
-        # Resume normally -> Goes to Synthesizer
-        async for chunk in agent.astream(None, config, stream_mode="updates"):
-             pass 
-             
-    elif request.action == "reject":
-        # Mutate the state with the human's instructions
-        new_query = f"HUMAN CORRECTION: {request.edited_draft}"
-        
-        # We update the state AS the 'critic' node, telling LangGraph it was rejected.
-        # This triggers the conditional edge to route back to the Retriever!
+    try:
+        # Update the graph state with the human's input as an interrupt payload
         await agent.aupdate_state(
             config, 
-            {
-                "current_sub_question": new_query, 
-                "critic_feedback": "REJECTED",
-                "loop_count": 0 # Give it 3 fresh tries
-            },
-            as_node="critic" 
+            {"current_draft": request.edited_draft, "human_feedback": request.action}
         )
         
-        # Resume the graph (it will now travel backwards to the Retriever)
+        # Resume the graph execution (passing None for inputs means "resume from interrupt")
         async for chunk in agent.astream(None, config, stream_mode="updates"):
-             pass 
-         
-    final_state = await agent.aget_state(config)
-    return {"final_report": final_state.values.get("current_draft")}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+            pass 
+            
+        # Fetch the very latest state to return the finalized report
+        state = await agent.aget_state(config)
+        return {"final_report": state.values.get("current_draft", request.edited_draft)}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
