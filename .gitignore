@@ -1,0 +1,51 @@
+# ==========================================
+# 1. Environment Variables & Secrets
+# ==========================================
+# NEVER commit your API keys to GitHub!
+.env
+.env.*
+
+# ==========================================
+# 2. Local Databases & Application State
+# ==========================================
+# Ignore local memory so you don't overwrite production or upload large files
+checkpoints.sqlite
+*.db
+*.sqlite
+*.sqlite3
+
+# Ignore your local chat history list
+chats.json
+
+# Ignore any documents you temporarily uploaded for testing
+*.pdf
+*.txt
+
+# ==========================================
+# 3. Python Virtual Environments
+# ==========================================
+.venv/
+venv/
+env/
+ENV/
+*.venv
+
+# ==========================================
+# 4. Python Bytecode & Cache
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# ==========================================
+# 5. IDEs and OS Files
+# ==========================================
+# VS Code
+.vscode/
+*.code-workspace
+
+# Mac/Windows System files
+.DS_Store
+Thumbs.db
